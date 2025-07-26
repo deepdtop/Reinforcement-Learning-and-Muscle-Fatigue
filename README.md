@@ -10,70 +10,84 @@ The key components are:
 
 ----------------------
 
-how it works:
+Advantage Actor-Critic (A2C) applied to FatigueEnv with Continuous Actions
 
-Deep Q-Learning Training Loop Explanation
------------------------------------------
+Environment & State:
+- State vector: concatenation of current biomechanical parameters (Cadence, GCT, HR),
+  previous biomechanical parameters (pre_efficiency_specific), and current fatigue level.
+- Action space: continuous vector in [-1, 1]^3 (one per biomechanical param)
+- Actions are scaled and applied to update biomechanical parameters,
+  with fatigue adjustments based on increase/decrease/no change.
 
-This script implements a basic Deep Q-Learning (DQN) algorithm using a simple linear model
-as the Q-function approximator and SGD with momentum for parameter updates.
+Key components:
+- Actor network outputs mean actions (μ(s)) bounded by tanh to [-1,1].
+- Action distribution: Normal(μ(s), σ^2) with fixed std σ=0.1.
+- Critic network outputs state value V(s).
 
-Main Steps in the Algorithm
----------------------------
+Action Sampling:
+  a_t ~ π_θ(a_t|s_t) = Normal(μ(s_t), σ^2)
+  log_prob = log π_θ(a_t|s_t)
 
-1. Reset Environment:
-   - At the beginning of each episode, the environment is reset to an initial state `s`.
+Reward & Transition:
+  r_t = environment reward from state transition after applying action a_t
+  s_{t+1} = next state from env.step(a_t)
 
-2. Action Selection (Epsilon-Greedy):
-   - With probability ε (epsilon), the agent selects a random action → encourages exploration.
-   - With probability 1 - ε, the agent selects the action `a` that maximizes the predicted Q-value:
-       Q(s, a) = model.predict(s)[a]
-   - This balances exploration and exploitation.
+Advantage Estimation with Generalized Advantage Estimation (GAE):
 
-3. Execute Action and Observe Outcome:
-   - The chosen action `a` is executed in the environment.
-   - The environment returns:
-       - next_state `s'`
-       - reward `r`
-       - done flag (whether the episode has ended)
+For a trajectory of length T, given discount factor γ and GAE parameter λ:
 
-4. Compute Bellman Target:
-   - The agent uses the next state `s'` to predict Q-values for all next actions: Q(s', a')
-   - The Bellman target for the chosen action is:
-       target = r + γ * max_a' Q(s', a')
-   - If the episode is done, then:
-       target = r
+  δ_t = r_t + γ V(s_{t+1}) * (1 - done_t) - V(s_t)
 
-5. Train the Q-function Approximator:
-   - Predict the current Q-values: `target_full = model.predict(s)`
-   - Only update the Q-value of the action that was actually taken:
-       target_full[0, a] = target
-   - Use stochastic gradient descent (SGD) with momentum to minimize the MSE between:
-       - predicted Q-values: model.predict(s)
-       - target values: target_full
-   - This trains the model to better approximate the expected future reward for each action.
+  A_t = δ_t + γ λ (1 - done_t) A_{t+1}, for t = T-1,...,0
+  with A_T = 0
 
-6. Loop or End:
-   - If the episode is not done, the agent continues from the new state `s'`.
-   - If done, the episode ends and the agent resets the environment for the next run.
+Returns (target for critic):
 
-What the Agent Learns:
-----------------------
-- The model learns to approximate the Q-function Q(s, a):
-    - The expected cumulative discounted reward of taking action `a` in state `s`
-      and following the learned policy thereafter.
-- The agent's policy improves over time as it favors actions with higher learned Q-values.
+  R_t = A_t + V(s_t)
 
-Model Details:
---------------
-- The Q-function is approximated using a linear model: Q(s, a) = s @ W + b
-- Training is done using gradient descent on the Mean Squared Error (MSE) between:
-    - Predicted Q-values and Bellman targets
-- Only the Q-value of the action that was actually taken is updated during training.
-- Training uses a momentum term to accelerate convergence and smooth updates.
+Loss Functions:
 
-Epsilon Decay (Optional):
--------------------------
-- In practice, epsilon is often decayed over time:
-    - Start with ε = 1.0 (more exploration)
-    - Gradually reduce ε to a smaller value (e.g., 0.1) as learning progresses
+- Actor loss (policy gradient):
+
+  L_actor = - E_{t} [log π_θ(a_t|s_t) * A_t]
+
+- Critic loss (value function regression):
+
+  L_critic = E_{t} [(V(s_t) - R_t)^2]
+
+Optimization:
+
+- Use separate Adam optimizers for actor and critic.
+- Minimize L_actor and L_critic with respect to their parameters.
+
+Training Loop Summary:
+
+1. Reset environment and scaler-transform initial state.
+2. For each step t in episode:
+   - Sample action a_t from actor policy.
+   - Execute a_t in env → obtain s_{t+1}, r_t, done.
+   - Store (log_prob, V(s_t), r_t, done).
+   - Update state = s_{t+1}.
+3. After episode end, get bootstrap value V(s_{T+1}) from critic.
+4. Compute advantages A_t and returns R_t via GAE.
+5. Update actor and critic networks using collected batch.
+
+Environment specifics:
+
+- Biomechanical parameters constrained within physical plausible bounds.
+- Fatigue level updated based on direction and magnitude of changes in biomechanical params.
+- Reward encourages improving efficiency proxy:
+
+   efficiency = 10*cadence/200 - 2*GCT/400 - 8*HR/200 - 2*fatigue/100
+
+- This reward guides agent to balance performance vs fatigue.
+
+Data Normalization:
+
+- States normalized using sklearn StandardScaler for stable training.
+
+Visualization:
+
+- Plot continuous actions per parameter over time.
+- Plot fatigue and reward evolution.
+- KDE plots of action distributions for analysis.
